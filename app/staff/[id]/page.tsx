@@ -1,75 +1,188 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
+import { z } from "zod";
+import Info from "@/components/info";
 
-interface StaffProfile {
-  phoneNumber: string;
-  position: string;
-  gender: string;
-}
-
-interface UserData {
+type StaffUser = {
+  id: string;
+  role: "staff";
   firstName: string;
   lastName: string;
   email: string;
-  id: string;
+};
+
+type StaffPosition = "CHECKER" | "SUPERVISOR" | "SUPPORT";
+
+type StaffProfile = {
+  position: StaffPosition;
+  gender: string;
+  phoneNumber: string;
+  address: string;
+};
+
+type Errors = Partial<
+  Record<"position" | "gender" | "phoneNumber" | "address", string>
+>;
+
+const STAFF_USER_KEY = "eventhub_staff_user";
+const STAFF_PROFILE_KEY = "eventhub_staff_profile";
+const STAFF_LOGGED_IN_KEY = "eventhub_staff_isLoggedIn";
+
+// Use StaffPositionValues object for z.nativeEnum()
+const StaffPositionValues = {
+  CHECKER: "CHECKER",
+  SUPERVISOR: "SUPERVISOR",
+  SUPPORT: "SUPPORT",
+} as const;
+
+//Zod schema
+const profileSchema = z.object({
+  position: z.nativeEnum(StaffPositionValues, { message: "Position is required" }),
+  gender: z.string().min(1, "Gender is required"),
+  phoneNumber: z
+    .string()
+    .trim()
+    .min(1, "Phone number is required")
+    .regex(/^[0-9+\-\s()]{7,20}$/, "Invalid phone number"),
+  address: z
+    .string()
+    .trim()
+    .min(1, "Address is required")
+    .min(5, "Address must be at least 5 characters"),
+});
+
+function safeParse<T>(raw: string | null): T | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
 }
 
 export default function StaffProfilePage() {
-  const params = useParams();
   const router = useRouter();
-  const [user, setUser] = useState<UserData | null>(null);
+  const params = useParams<{ id: string }>();
+  const id = params?.id as string | undefined;
+
+  const [user, setUser] = useState<StaffUser | null>(null);
   const [profile, setProfile] = useState<StaffProfile | null>(null);
-  const [isEditing, setIsEditing] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [editData, setEditData] = useState<StaffProfile | null>(null);
+
+  // Edit mode state
+  const [editMode, setEditMode] = useState(false);
+  const [editForm, setEditForm] = useState({
+    position: "CHECKER" as StaffPosition,
+    gender: "",
+    phoneNumber: "",
+    address: "",
+  });
+  const [errors, setErrors] = useState<Errors>({});
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    // Load user and profile data from localStorage
-    const userData = localStorage.getItem("user");
-    const profileData = localStorage.getItem("staffProfile");
+    const isLoggedIn = localStorage.getItem(STAFF_LOGGED_IN_KEY) === "true";
+    const u = safeParse<any>(localStorage.getItem(STAFF_USER_KEY));
+    const p = safeParse<StaffProfile>(localStorage.getItem(STAFF_PROFILE_KEY));
 
-    if (userData) {
-      const parsedUser = JSON.parse(userData);
-      setUser(parsedUser);
+    if (!isLoggedIn || !u) {
+      setUser(null);
+      setProfile(null);
+      setLoading(false);
+      return;
     }
 
-    if (profileData) {
-      const parsedProfile = JSON.parse(profileData);
-      setProfile(parsedProfile);
-      setEditData(parsedProfile);
+    // If URL id != stored user id, treat as not logged in (no data)
+    if (id && u?.id && u.id !== id) {
+      setUser(null);
+      setProfile(null);
+      setLoading(false);
+      return;
     }
+
+
+    setUser({
+      id: u.id,
+      role: "staff",
+      firstName: u.firstName,
+      lastName: u.lastName,
+      email: u.email,
+    });
+
+    const defaultProfile: StaffProfile = {
+      position: "CHECKER",
+      gender: "",
+      phoneNumber: "",
+      address: "",
+    };
+
+    const currentProfile = p ?? defaultProfile;
+    setProfile(currentProfile);
+
+    // Populate edit form with current profile
+    setEditForm(currentProfile);
 
     setLoading(false);
-  }, []);
-
-  const handleEditChange = (
-    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
-  ) => {
-    if (!editData) return;
-    const { name, value } = e.target;
-    setEditData((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
-  };
-
-  const handleSaveProfile = () => {
-    if (editData) {
-      localStorage.setItem("staffProfile", JSON.stringify(editData));
-      setProfile(editData);
-      setIsEditing(false);
-    }
-  };
+  }, [id, router]);
 
   const handleLogout = () => {
-    localStorage.removeItem("user");
-    localStorage.removeItem("userRole");
-    localStorage.removeItem("staffProfile");
-    router.push("/auth/login");
+    localStorage.removeItem(STAFF_LOGGED_IN_KEY);
+    router.push("/staff/login");
   };
+
+  const validateEdit = () => {
+    const result = profileSchema.safeParse(editForm);
+
+    if (result.success) {
+      setErrors({});
+      return true;
+    }
+
+    const fieldErrors = result.error.flatten().fieldErrors as Record<string, string[]>;
+    const e: Errors = {};
+
+    for (const [key, messages] of Object.entries(fieldErrors)) {
+      if (messages?.length) {
+        e[key as keyof Errors] = messages[0];
+      }
+    }
+
+    setErrors(e);
+    return false;
+  };
+
+  const handleSaveProfile = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!validateEdit()) return;
+
+    setSaving(true);
+
+    // Use validated data
+    const validatedData = profileSchema.parse(editForm);
+
+    localStorage.setItem(STAFF_PROFILE_KEY, JSON.stringify(validatedData));
+    setProfile(validatedData);
+    
+    setEditMode(false);
+    setSaving(false);
+    setErrors({});
+  };
+
+  const inputClass = (field: keyof Errors) =>
+    `w-full px-4 py-2 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white
+     focus:outline-none focus:ring-2 ${
+       errors[field]
+         ? "border border-red-500 focus:ring-red-500"
+         : "border border-gray-300 dark:border-gray-600 focus:ring-indigo-500"
+     }`;
+
+  const ErrorText = ({ field }: { field: keyof Errors }) =>
+    errors[field] ? (
+      <p className="mt-1 text-xs text-red-600">{errors[field]}</p>
+    ) : null;
 
   if (loading) {
     return (
@@ -81,211 +194,194 @@ export default function StaffProfilePage() {
 
   if (!user) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center px-4">
         <div className="text-center">
-          <p className="mb-4">Please log in to view your profile</p>
-          <Link href="/auth/login" className="text-indigo-600 hover:underline">
-            Go to Login
+          <p className="mb-4">Please log in as staff to view this page</p>
+          <Link href="/staff/login" className="text-indigo-600 hover:underline">
+            Go to Staff Login
           </Link>
         </div>
       </div>
     );
   }
 
-  const getPositionLabel = (position: string) => {
-    const labels: Record<string, string> = {
-      CHECKER: "Checker",
-      SUPERVISOR: "Supervisor",
-      SUPPORT: "Support",
-    };
-    return labels[position] || position;
-  };
-
   return (
     <div className="min-h-screen bg-linear-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 px-4 py-8">
       <div className="max-w-2xl mx-auto">
-        {/* Header */}
         <div className="flex justify-between items-center mb-8">
           <div>
             <h1 className="text-3xl font-bold text-indigo-600 dark:text-indigo-400">
               Staff Profile
             </h1>
-            <p className="text-gray-600 dark:text-gray-400 mt-2">
-              Manage your staff information
-            </p>
+            <p className="text-gray-600 dark:text-gray-400 mt-2">Staff dashboard info</p>
           </div>
-          <button
-            onClick={handleLogout}
-            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition"
-          >
-            Logout
-          </button>
+
+          <div className="space-x-2">
+            {!editMode ? (
+              <button
+                onClick={() => setEditMode(true)}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg"
+              >
+                Edit Profile
+              </button>
+            ) : (
+              <button
+                onClick={() => {
+                  setEditMode(false);
+                  setErrors({});
+                }}
+                className="px-4 py-2 bg-gray-500 hover:bg-gray-600 text-white rounded-lg"
+              >
+                Cancel
+              </button>
+            )}
+            <button
+              onClick={handleLogout}
+              className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg"
+            >
+              Logout
+            </button>
+          </div>
         </div>
 
-        {/* Profile Card */}
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8">
-          {/* Basic Information */}
-          <div className="mb-8">
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8 space-y-6">
+          {/* Basic Info - Read Only */}
+          <div>
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-3">
               Basic Information
             </h2>
-            <div className="grid grid-cols-2 gap-4 mb-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  First Name
-                </label>
-                <p className="px-4 py-2 bg-gray-50 dark:bg-gray-700 rounded-lg text-gray-900 dark:text-white">
-                  {user.firstName}
-                </p>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  Last Name
-                </label>
-                <p className="px-4 py-2 bg-gray-50 dark:bg-gray-700 rounded-lg text-gray-900 dark:text-white">
-                  {user.lastName}
-                </p>
-              </div>
+            <div className="grid grid-cols-2 gap-4">
+              <Info label="First Name" value={user.firstName || "-"} />
+              <Info label="Last Name" value={user.lastName || "-"} />
             </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Email
-              </label>
-              <p className="px-4 py-2 bg-gray-50 dark:bg-gray-700 rounded-lg text-gray-900 dark:text-white">
-                {user.email}
-              </p>
+            <div className="mt-4">
+              <Info label="Email" value={user.email || "-"} />
             </div>
           </div>
 
-          {/* Divider */}
-          <hr className="my-8 border-gray-300 dark:border-gray-600" />
+          <hr className="border-gray-300 dark:border-gray-600" />
 
-          {/* Staff Details */}
+          {/* Edit Profile Form / Display */}
           <div>
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
-                Staff Information
-              </h2>
-              {!isEditing && (
-                <button
-                  onClick={() => setIsEditing(true)}
-                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition"
-                >
-                  Edit
-                </button>
-              )}
-            </div>
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-3">
+              Staff Details
+            </h2>
 
-            {isEditing ? (
-              <div className="space-y-4">
-                {/* Position */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                    Position
-                  </label>
-                  <select
-                    name="position"
-                    value={editData?.position || "CHECKER"}
-                    onChange={handleEditChange}
-                    className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  >
-                    <option value="CHECKER">Checker</option>
-                    <option value="SUPERVISOR">Supervisor</option>
-                    <option value="SUPPORT">Support</option>
-                  </select>
+            {editMode ? (
+              <form onSubmit={handleSaveProfile} className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-sm font-medium">Position *</label>
+                    <select
+                      name="position"
+                      value={editForm.position}
+                      onChange={(e) =>
+                        setEditForm((prev) => ({
+                          ...prev,
+                          position: e.target.value as StaffPosition,
+                        }))
+                      }
+                      className={inputClass("position")}
+                    >
+                      <option value="CHECKER">Checker</option>
+                      <option value="SUPERVISOR">Supervisor</option>
+                      <option value="SUPPORT">Support</option>
+                    </select>
+                    <ErrorText field="position" />
+                  </div>
+
+                  <div>
+                    <label className="text-sm font-medium">Gender *</label>
+                    <select
+                      name="gender"
+                      value={editForm.gender}
+                      onChange={(e) =>
+                        setEditForm((prev) => ({
+                          ...prev,
+                          gender: e.target.value,
+                        }))
+                      }
+                      className={inputClass("gender")}
+                    >
+                      <option value="">Select Gender</option>
+                      <option value="Male">Male</option>
+                      <option value="Female">Female</option>
+                      <option value="Other">Other</option>
+                    </select>
+                    <ErrorText field="gender" />
+                  </div>
                 </div>
 
-                {/* Phone Number */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                    Phone Number
-                  </label>
+                  <label className="text-sm font-medium">Phone Number *</label>
                   <input
-                    type="tel"
                     name="phoneNumber"
-                    value={editData?.phoneNumber || ""}
-                    onChange={handleEditChange}
-                    className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    value={editForm.phoneNumber}
+                    onChange={(e) =>
+                      setEditForm((prev) => ({
+                        ...prev,
+                        phoneNumber: e.target.value,
+                      }))
+                    }
+                    className={inputClass("phoneNumber")}
+                    placeholder="+8801XXXXXXXXX"
                   />
+                  <ErrorText field="phoneNumber" />
                 </div>
 
-                {/* Gender */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                    Gender
-                  </label>
-                  <select
-                    name="gender"
-                    value={editData?.gender || ""}
-                    onChange={handleEditChange}
-                    className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  >
-                    <option value="">Select Gender</option>
-                    <option value="Male">Male</option>
-                    <option value="Female">Female</option>
-                    <option value="Other">Other</option>
-                  </select>
+                  <label className="text-sm font-medium">Address *</label>
+                  <input
+                    name="address"
+                    value={editForm.address}
+                    onChange={(e) =>
+                      setEditForm((prev) => ({
+                        ...prev,
+                        address: e.target.value,
+                      }))
+                    }
+                    className={inputClass("address")}
+                    placeholder="Street, Area, City"
+                  />
+                  <ErrorText field="address" />
                 </div>
 
-                {/* Action Buttons */}
-                <div className="flex gap-4 pt-4">
+                <div className="flex space-x-3 pt-4">
                   <button
-                    onClick={handleSaveProfile}
-                    className="flex-1 py-2 px-4 bg-green-600 hover:bg-green-700 text-white font-semibold rounded-lg transition"
+                    type="submit"
+                    disabled={saving}
+                    className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg disabled:bg-gray-400"
                   >
-                    Save Changes
-                  </button>
-                  <button
-                    onClick={() => {
-                      setIsEditing(false);
-                      setEditData(profile);
-                    }}
-                    className="flex-1 py-2 px-4 bg-gray-400 hover:bg-gray-500 text-white font-semibold rounded-lg transition"
-                  >
-                    Cancel
+                    {saving ? "Saving..." : "Save Profile"}
                   </button>
                 </div>
-              </div>
+              </form>
             ) : (
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    Position
-                  </label>
-                  <p className="px-4 py-2 bg-gray-50 dark:bg-gray-700 rounded-lg text-gray-900 dark:text-white">
-                    {profile?.position ? getPositionLabel(profile.position) : "Not provided"}
-                  </p>
+              <>
+                <div className="grid grid-cols-2 gap-4">
+                  <Info label="Position" value={profile?.position || "Not provided"} />
+                  <Info label="Gender" value={profile?.gender || "Not provided"} />
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    Phone Number
-                  </label>
-                  <p className="px-4 py-2 bg-gray-50 dark:bg-gray-700 rounded-lg text-gray-900 dark:text-white">
-                    {profile?.phoneNumber || "Not provided"}
-                  </p>
+                <div className="grid grid-cols-2 gap-4 mt-4">
+                  <Info label="Phone Number" value={profile?.phoneNumber || "Not provided"} />
+                  <Info label="Address" value={profile?.address || "Not provided"} />
                 </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    Gender
-                  </label>
-                  <p className="px-4 py-2 bg-gray-50 dark:bg-gray-700 rounded-lg text-gray-900 dark:text-white">
-                    {profile?.gender || "Not provided"}
-                  </p>
-                </div>
-              </div>
+              </>
             )}
           </div>
 
-          {/* Back Button */}
-          <div className="mt-8 pt-8 border-t border-gray-300 dark:border-gray-600">
-            <Link href="/" className="text-indigo-600 dark:text-indigo-400 hover:underline">
-              ← Back to Home
-            </Link>
-          </div>
+          {!editMode && (
+            <div className="pt-6 border-t border-gray-300 dark:border-gray-600">
+              <Link href="/" className="text-indigo-600 dark:text-indigo-400 hover:underline">
+                ← Back to Home
+              </Link>
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
 }
+
+
