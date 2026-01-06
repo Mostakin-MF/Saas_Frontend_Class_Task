@@ -4,6 +4,8 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { z } from "zod";
+import axios from "axios";
+
 
 type StaffPosition = "CHECKER" | "SUPERVISOR" | "SUPPORT";
 
@@ -26,7 +28,6 @@ type StaffProfile = {
   position: StaffPosition;
   gender: string;
   phoneNumber: string;
-  address: string;
 };
 
 const staffRegisterSchema = z
@@ -43,17 +44,16 @@ const staffRegisterSchema = z
       .trim()
       .min(1, "Phone number is required")
       .regex(/^[0-9+\-\s()]{7,20}$/, "Invalid phone number"),
-    address: z
-      .string()
-      .trim()
-      .min(1, "Address is required")
-      .min(5, "Address is too short"),
     position: z.nativeEnum(StaffPositionValues, { message: "Position is required" }),
     gender: z.string().min(1, "Gender is required"),
     password: z
       .string()
       .min(1, "Password is required")
-      .min(8, "Password must be at least 8 characters"),
+      .min(8, "Password must be at least 8 characters")
+      .regex(
+        /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/,
+        "Password must contain uppercase, lowercase, number, and special character"
+      ),
     confirmPassword: z.string().min(1, "Confirm password is required"),
   })
   .refine((data) => data.password === data.confirmPassword, {
@@ -71,7 +71,7 @@ type Errors = Partial<
     | "position"
     | "gender"
     | "phoneNumber"
-    | "address",
+    | "general",
     string
   >
 >;
@@ -92,7 +92,6 @@ export default function StaffRegisterPage() {
     position: "CHECKER" as StaffPosition,
     gender: "",
     phoneNumber: "",
-    address: "",
   });
 
   const [errors, setErrors] = useState<Errors>({});
@@ -104,29 +103,7 @@ export default function StaffRegisterPage() {
     setErrors((p) => ({ ...p, [name]: "" }));
   };
 
-  const validate = () => {
-    const parseResult = staffRegisterSchema.safeParse(form);
-
-    if (parseResult.success) {
-      setErrors({});
-      return true;
-    }
-
-    const fieldErrors = parseResult.error.flatten().fieldErrors as Record<string, string[]>;
-    const e: Errors = {};
-
-    for (const [key, messages] of Object.entries(fieldErrors)) {
-      if (messages?.length) {
-        e[key as keyof Errors] = messages[0];
-      }
-    }
-
-    setErrors(e);
-    return false;
-  };
-
-  // ✅ FIXED: Validate directly in handleSubmit - no separate result state
-  const handleSubmit = (ev: React.FormEvent) => {
+  const handleSubmit = async (ev: React.FormEvent) => {
     ev.preventDefault();
     
     // Validate and get result IMMEDIATELY
@@ -151,34 +128,44 @@ export default function StaffRegisterPage() {
     setLoading(true);
     setErrors({});
 
-    const id = Date.now().toString();
+    try {
+      // ✅ Use Axios for public registration
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { confirmPassword, ...registerData } = validatedData;
+      
+      const response = await axios.post(`${process.env.NEXT_PUBLIC_API_URL}/staff/public-register`, {
+        fullName: `${registerData.firstName} ${registerData.lastName}`,
+        email: registerData.email,
+        password: registerData.password,
+        position: registerData.position,
+        phoneNumber: registerData.phoneNumber,
+        gender: registerData.gender,
+      });
 
-    const user: StaffUser = {
-      id,
-      role: "staff",
-      firstName: validatedData.firstName,
-      lastName: validatedData.lastName,
-      email: validatedData.email,
-      password: validatedData.password,
-    };
+      if (response.status === 201) {
+        alert("Registration successful! Please login.");
+        router.push("/staff/login");
+      }
+    } catch (error: any) {
+      console.error("Registration failed:", error);
+      let msg = error.response?.data?.message || "Registration failed. Please try again.";
+      
+      if (Array.isArray(msg)) {
+        msg = msg.join(", ");
+      }
 
-    const profile: StaffProfile = {
-      position: validatedData.position,
-      gender: validatedData.gender,
-      phoneNumber: validatedData.phoneNumber,
-      address: validatedData.address,
-    };
-
-    localStorage.setItem(STAFF_USER_KEY, JSON.stringify(user));
-    localStorage.setItem(STAFF_PROFILE_KEY, JSON.stringify(profile));
-    localStorage.setItem(STAFF_LOGGED_IN_KEY, "true");
-
-    setLoading(false);
-    router.push(`/staff/${id}`);
+      if (typeof msg === 'string' && (msg.toLowerCase().includes("email") || msg.toLowerCase().includes("exists"))) {
+        setErrors({ email: msg });
+      } else {
+        setErrors({ general: msg });
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   const inputClass = (field: keyof Errors) =>
-    `w-full px-4 py-2 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white
+    `w-full px-4 py-2 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white
      focus:outline-none focus:ring-2 ${
        errors[field]
          ? "border border-red-500 focus:ring-red-500"
@@ -189,15 +176,21 @@ export default function StaffRegisterPage() {
     errors[field] ? <p className="mt-1 text-xs text-red-600">{errors[field]}</p> : null;
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-linear-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 px-4 py-8">
+    <div className="min-h-screen flex items-center justify-center bg-linear-to-br from-blue-50 to-indigo-100 dark:from-slate-900 dark:to-slate-800 px-4 py-8">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-indigo-600 dark:text-indigo-400">EventHub</h1>
           <p className="text-gray-600 dark:text-gray-400">Create staff account</p>
         </div>
 
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8">
+        <div className="bg-white dark:bg-slate-800 rounded-lg shadow-lg p-8">
           <form onSubmit={handleSubmit} className="space-y-4">
+            {errors.general && (
+              <div className="p-3 bg-red-100 border border-red-400 text-red-700 rounded mb-4">
+                {errors.general}
+              </div>
+            )}
+
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="text-sm font-medium">First Name *</label>
@@ -249,17 +242,7 @@ export default function StaffRegisterPage() {
               <ErrorText field="phoneNumber" />
             </div>
 
-            <div>
-              <label className="text-sm font-medium">Address *</label>
-              <input
-                name="address"
-                value={form.address}
-                onChange={onChange}
-                className={inputClass("address")}
-                placeholder="Street, Area, City"
-              />
-              <ErrorText field="address" />
-            </div>
+
 
             <div>
               <label className="text-sm font-medium">Position *</label>
@@ -285,9 +268,9 @@ export default function StaffRegisterPage() {
                 className={inputClass("gender")}
               >
                 <option value="">Select Gender</option>
-                <option value="Male">Male</option>
-                <option value="Female">Female</option>
-                <option value="Other">Other</option>
+                <option value="MALE">Male</option>
+                <option value="FEMALE">Female</option>
+                <option value="OTHER">Other</option>
               </select>
               <ErrorText field="gender" />
             </div>

@@ -4,6 +4,8 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { z } from "zod";
+import axios from "axios";
+
 
 type StaffUser = {
   id: string;
@@ -70,7 +72,7 @@ export default function StaffLoginPage() {
     return false;
   };
 
-  const handleSubmit = (ev: React.FormEvent) => {
+  const handleSubmit = async (ev: React.FormEvent) => {
     ev.preventDefault();
     if (!validate()) return;
 
@@ -79,28 +81,57 @@ export default function StaffLoginPage() {
     // Zod already validated, use result.data (trimmed)
     const validatedData = loginSchema.parse({ email, password });
 
-    const user = safeParse<StaffUser>(localStorage.getItem(STAFF_USER_KEY));
-    if (!user) {
-      setErrors({ email: "No staff account found. Please register first." });
-      setLoading(false);
-      return;
-    }
+    try {
+      const response = await axios.post(`${process.env.NEXT_PUBLIC_API_URL}/staff/login`, {
+          email,
+          password,
+        });
+      
+      const { access_token } = response.data;
+      if (access_token) {
+        console.log("Login successful, token:", access_token.substring(0, 10) + "...");
+        localStorage.setItem("access_token", access_token);
+        localStorage.setItem(STAFF_LOGGED_IN_KEY, "true");
+        
+        // Fetch staff profile to get the correct Staff ID
+        try {
+          // Add timestamp to prevent caching based on user request
+          console.log("Fetching /staff/me...");
+          const meResponse = await axios.get(`/staff/me`, {
+            headers: {
+              Authorization: `Bearer ${access_token}`,
+            },
+          });
+          console.log("Staff/me response:", meResponse.data);
+          
+          // Backend now returns { data: { id: ... } }
+          const staffId = meResponse.data.data?.id;
+          
+          if (!staffId) {
+            console.error("Staff ID missing in response:", meResponse.data);
+            throw new Error("Staff ID not found in profile response");
+          }
 
-    // ✅ Use validatedData.email (already trimmed by Zod)
-    const ok = user.email === validatedData.email && user.password === validatedData.password;
-    if (!ok) {
-      setErrors({ password: "Invalid email or password" });
+          console.log("Redirecting to staff profile:", staffId);
+          setLoading(false);
+          router.push(`/staff/${staffId}`);
+        } catch (profileError) {
+          console.error("Failed to fetch staff profile:", profileError);
+          // Fallback or error handling if needed, but for now show generic error
+          setErrors({ password: "Login successful but failed to load profile." });
+          setLoading(false);
+        }
+      }
+    } catch (error: any) {
+      console.error("Login failed:", error);
+      const msg = error.response?.data?.message || "Invalid email or password";
+      setErrors({ password: msg });
       setLoading(false);
-      return;
     }
-
-    localStorage.setItem(STAFF_LOGGED_IN_KEY, "true");
-    setLoading(false);
-    router.push(`/staff/${user.id}`);
   };
 
   const inputClass = (field: keyof Errors) =>
-    `w-full px-4 py-2 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white
+    `w-full px-4 py-2 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white
      focus:outline-none focus:ring-2 ${
        errors[field]
          ? "border border-red-500 focus:ring-red-500"
@@ -115,7 +146,7 @@ export default function StaffLoginPage() {
           <p className="text-gray-600 dark:text-gray-400">Staff sign in</p>
         </div>
 
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8">
+        <div className="bg-white dark:bg-slate-800 rounded-lg shadow-lg p-8">
           <form onSubmit={handleSubmit} className="space-y-6">
             <div>
               <label className="text-sm font-medium">Email *</label>

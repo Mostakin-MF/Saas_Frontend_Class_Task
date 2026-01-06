@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { z } from "zod";
 import Info from "@/components/info";
+import axios from "axios";
 
 type StaffUser = {
   id: string;
@@ -20,11 +21,10 @@ type StaffProfile = {
   position: StaffPosition;
   gender: string;
   phoneNumber: string;
-  address: string;
 };
 
 type Errors = Partial<
-  Record<"position" | "gender" | "phoneNumber" | "address", string>
+  Record<"position" | "gender" | "phoneNumber", string>
 >;
 
 const STAFF_USER_KEY = "eventhub_staff_user";
@@ -47,11 +47,6 @@ const profileSchema = z.object({
     .trim()
     .min(1, "Phone number is required")
     .regex(/^[0-9+\-\s()]{7,20}$/, "Invalid phone number"),
-  address: z
-    .string()
-    .trim()
-    .min(1, "Address is required")
-    .min(5, "Address must be at least 5 characters"),
 });
 
 function safeParse<T>(raw: string | null): T | null {
@@ -78,54 +73,66 @@ export default function StaffProfilePage() {
     position: "CHECKER" as StaffPosition,
     gender: "",
     phoneNumber: "",
-    address: "",
   });
   const [errors, setErrors] = useState<Errors>({});
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     const isLoggedIn = localStorage.getItem(STAFF_LOGGED_IN_KEY) === "true";
-    const u = safeParse<any>(localStorage.getItem(STAFF_USER_KEY));
-    const p = safeParse<StaffProfile>(localStorage.getItem(STAFF_PROFILE_KEY));
+    const token = localStorage.getItem("access_token");
 
-    if (!isLoggedIn || !u) {
+    if (!isLoggedIn || !token) {
       setUser(null);
       setProfile(null);
       setLoading(false);
       return;
     }
 
-    // If URL id != stored user id, treat as not logged in (no data)
-    if (id && u?.id && u.id !== id) {
-      setUser(null);
-      setProfile(null);
-      setLoading(false);
-      return;
-    }
+    const fetchData = async () => {
+      if (!id) return;
+      
+      try {
+        const token = localStorage.getItem("access_token");
+        const response = await axios.get(`${process.env.NEXT_PUBLIC_API_URL}/staff/${id}`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+        const data = response.data.data;
 
+        setUser({
+          id: data.id,
+          role: "staff",
+          firstName: data.fullName?.split(' ')[0] || '',
+          lastName: data.fullName?.split(' ').slice(1).join(' ') || '',
+          email: data.user?.email || '',
+        });
 
-    setUser({
-      id: u.id,
-      role: "staff",
-      firstName: u.firstName,
-      lastName: u.lastName,
-      email: u.email,
-    });
+        setProfile({
+          position: data.position,
+          gender: data.gender,
+          phoneNumber: data.phoneNumber,
+        });
 
-    const defaultProfile: StaffProfile = {
-      position: "CHECKER",
-      gender: "",
-      phoneNumber: "",
-      address: "",
+        setEditForm({
+            position: data.position,
+            gender: data.gender,
+            phoneNumber: data.phoneNumber,
+        });
+
+      } catch (error) {
+        console.error("Failed to fetch staff data", error);
+        // Handle token expiry etc
+        if ((error as any).response?.status === 401) {
+             localStorage.removeItem(STAFF_LOGGED_IN_KEY);
+             router.push("/staff/login");
+        }
+      } finally {
+        setLoading(false);
+      }
     };
 
-    const currentProfile = p ?? defaultProfile;
-    setProfile(currentProfile);
-
-    // Populate edit form with current profile
-    setEditForm(currentProfile);
-
-    setLoading(false);
+    fetchData();
   }, [id, router]);
 
   const handleLogout = () => {
@@ -154,7 +161,7 @@ export default function StaffProfilePage() {
     return false;
   };
 
-  const handleSaveProfile = (e: React.FormEvent) => {
+  const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!validateEdit()) return;
 
@@ -163,12 +170,23 @@ export default function StaffProfilePage() {
     // Use validated data
     const validatedData = profileSchema.parse(editForm);
 
-    localStorage.setItem(STAFF_PROFILE_KEY, JSON.stringify(validatedData));
-    setProfile(validatedData);
-    
-    setEditMode(false);
-    setSaving(false);
-    setErrors({});
+    try {
+        const token = localStorage.getItem("access_token");
+        await axios.put(`${process.env.NEXT_PUBLIC_API_URL}/staff/${id}`, validatedData, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+        setProfile((prev) => ({ ...prev, ...validatedData } as StaffProfile));
+        setEditMode(false);
+        setErrors({});
+        // Optional: Add toast success here
+    } catch (error) {
+        console.error("Failed to update profile", error);
+        // Optional: Add toast error here
+    } finally {
+        setSaving(false);
+    }
   };
 
   const inputClass = (field: keyof Errors) =>
@@ -206,7 +224,7 @@ export default function StaffProfilePage() {
   }
 
   return (
-    <div className="min-h-screen bg-linear-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 px-4 py-8">
+    <div className="min-h-screen bg-linear-to-br from-slate-50 to-slate-100 dark:from-slate-900 dark:to-slate-800 px-4 py-8">
       <div className="max-w-2xl mx-auto">
         <div className="flex justify-between items-center mb-8">
           <div>
@@ -269,7 +287,7 @@ export default function StaffProfilePage() {
 
             {editMode ? (
               <form onSubmit={handleSaveProfile} className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 gap-4">
                   <div>
                     <label className="text-sm font-medium">Position *</label>
                     <select
@@ -304,9 +322,9 @@ export default function StaffProfilePage() {
                       className={inputClass("gender")}
                     >
                       <option value="">Select Gender</option>
-                      <option value="Male">Male</option>
-                      <option value="Female">Female</option>
-                      <option value="Other">Other</option>
+                      <option value="MALE">Male</option>
+                      <option value="FEMALE">Female</option>
+                      <option value="OTHER">Other</option>
                     </select>
                     <ErrorText field="gender" />
                   </div>
@@ -329,22 +347,7 @@ export default function StaffProfilePage() {
                   <ErrorText field="phoneNumber" />
                 </div>
 
-                <div>
-                  <label className="text-sm font-medium">Address *</label>
-                  <input
-                    name="address"
-                    value={editForm.address}
-                    onChange={(e) =>
-                      setEditForm((prev) => ({
-                        ...prev,
-                        address: e.target.value,
-                      }))
-                    }
-                    className={inputClass("address")}
-                    placeholder="Street, Area, City"
-                  />
-                  <ErrorText field="address" />
-                </div>
+
 
                 <div className="flex space-x-3 pt-4">
                   <button
@@ -358,14 +361,13 @@ export default function StaffProfilePage() {
               </form>
             ) : (
               <>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 gap-4">
                   <Info label="Position" value={profile?.position || "Not provided"} />
                   <Info label="Gender" value={profile?.gender || "Not provided"} />
                 </div>
 
-                <div className="grid grid-cols-2 gap-4 mt-4">
+                <div className="grid grid-cols-1 gap-4 mt-4">
                   <Info label="Phone Number" value={profile?.phoneNumber || "Not provided"} />
-                  <Info label="Address" value={profile?.address || "Not provided"} />
                 </div>
               </>
             )}
